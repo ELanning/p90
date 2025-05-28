@@ -1,0 +1,19 @@
+[project]
+name = "p90"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "cyclopts>=3.16.2",
+    "httpx>=0.28.1",
+    "rich>=14.0.0",
+]
+
+[project.scripts]
+mycli = "p90.__main__:main"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.11.11",
+]
