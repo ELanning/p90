@@ -303,5 +303,9 @@ def execute_command(command: str):
         console.print(f"[red]{result.stderr}[/red]")
 
 
+def main():
+    app()
+
+
 if __name__ == "__main__":
     app()
