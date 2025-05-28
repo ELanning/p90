@@ -33,153 +33,46 @@ class ParsedResponse:
     script_body: str = ""
 
 
-def ensure_config_exists():
-    """Ensure config directory and files exist."""
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    if not CONFIG_PATH.exists():
-        default_config = load_json(DEFAULTS_DIR / "config.json")
-        save_json(CONFIG_PATH, default_config)
+# ===== COMMANDS =====
 
+@app.default
+def default_action(*args):
+    """Main command handler."""
+    # Check API key
+    if not get_api_headers():
+        print("OpenRouter API key not configured. Please run 'p90 config' to set your openrouter_api_key.")
+        return
 
-def load_json(path: Path) -> Dict[str, Any]:
-    """Load JSON file."""
-    with open(path) as f:
-        return json.load(f)
+    # Get user input
+    user_input = get_user_input(args)
+    if not user_input:
+        print("No input provided")
+        return
 
-
-def save_json(path: Path, data: Dict[str, Any]):
-    """Save JSON file."""
-    with open(path, 'w') as f:
-        json.dump(data, f, indent=4)
-
-
-def get_editor() -> str:
-    """Get the user's preferred editor."""
-    return os.environ.get('EDITOR', 'nano')
-
-
-def get_api_headers() -> Optional[Dict[str, str]]:
-    """Get OpenRouter API headers."""
-    if not CONFIG_PATH.exists():
-        return None
-
+    # Get and parse response
     try:
-        config = load_json(CONFIG_PATH)
-        api_key = config.get("openrouter_api_key")
-        if not api_key:
-            return None
+        response = call_openrouter_api(user_input)
+        parsed = parse_model_response(response)
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        return
 
-        return {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
-    except (json.JSONDecodeError, IOError):
-        return None
+    # Handle response types
+    if parsed.response_type == "response":
+        console.print(Markdown(parsed.content))
 
+    elif parsed.response_type == "cli":
+        execute_command(parsed.content)
 
-def get_system_prompt() -> str:
-    """Get system prompt with hydrated variables."""
-    prompt_path = SYSTEM_PROMPT_PATH if SYSTEM_PROMPT_PATH.exists() else DEFAULTS_DIR / "system_prompt.md"
+    elif parsed.response_type == "python-script":
+        SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+        script_path = SCRIPTS_DIR / parsed.script_name
 
-    with open(prompt_path) as f:
-        content = f.read()
+        with open(script_path, 'w') as f:
+            f.write(parsed.script_body)
 
-    # Hydrate variables
-    replacements = {
-        "${{OS}}": os.name,
-        "${{CWD}}": os.getcwd(),
-        "${{DATE}}": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "${{SHELL}}": os.environ.get("SHELL", "unknown")
-    }
-
-    for old, new in replacements.items():
-        content = content.replace(old, new)
-
-    return content
-
-
-def get_model_config() -> Dict[str, Any]:
-    """Get model configuration without API key."""
-    config_path = CONFIG_PATH if CONFIG_PATH.exists() else DEFAULTS_DIR / "config.json"
-    config = load_json(config_path)
-    config.pop("openrouter_api_key", None)
-    return config
-
-
-def call_openrouter_api(user_input: str) -> str:
-    """Make API call to OpenRouter."""
-    payload = {
-        "messages": [
-            {"role": "system", "content": get_system_prompt()},
-            {"role": "user", "content": user_input},
-        ],
-        **get_model_config()
-    }
-
-    response = httpx.post(
-        OPENROUTER_API_URL,
-        headers=get_api_headers(),
-        json=payload,
-        timeout=40,
-    )
-    response.raise_for_status()
-    return response.json()["choices"][0]["message"]["content"]
-
-
-def parse_model_response(response: str) -> ParsedResponse:
-    """Parse model response based on XML format."""
-    patterns = [
-        (r'<response>(.*?)</response>', lambda m: ParsedResponse("response", m.group(1).strip())),
-        (r'<cli>(.*?)</cli>', lambda m: ParsedResponse("cli", m.group(1).strip())),
-    ]
-
-    for pattern, handler in patterns:
-        match = re.search(pattern, response, re.DOTALL)
-        if match:
-            return handler(match)
-
-    # Handle python-script format
-    script_match = re.search(r'<python-script>(.*?)</python-script>', response, re.DOTALL)
-    if script_match:
-        content = script_match.group(1)
-        name_match = re.search(r'<script-name>(.*?)</script-name>', content, re.DOTALL)
-        body_match = re.search(r'<script-body>(.*?)</script-body>', content, re.DOTALL)
-
-        if name_match and body_match:
-            return ParsedResponse(
-                "python-script",
-                script_name=name_match.group(1).strip(),
-                script_body=body_match.group(1).strip()
-            )
-
-    return ParsedResponse("response", response)
-
-
-def execute_command(command: str):
-    """Execute a shell command and display output."""
-    print(f"Executing: {command}")
-    result = subprocess.run(command, shell=True, capture_output=True, text=True)
-    if result.stdout:
-        print(result.stdout)
-    if result.stderr:
-        console.print(f"[red]{result.stderr}[/red]")
-
-
-def get_user_input(args) -> Optional[str]:
-    """Get user input from args or editor."""
-    if args:
-        return " ".join(args)
-
-    with tempfile.NamedTemporaryFile(mode='w+', suffix='.txt', delete=False) as f:
-        temp_path = f.name
-
-    subprocess.run([get_editor(), temp_path])
-
-    with open(temp_path) as f:
-        user_input = f.read().strip()
-
-    os.unlink(temp_path)
-    return user_input if user_input else None
+        print(f"Saved script to {script_path}")
+        execute_command(f"python {script_path}")
 
 
 @app.command
@@ -259,44 +152,155 @@ def delete(script_name: str):
     print(f"Successfully deleted script '{script_name}'")
 
 
-@app.default
-def default_action(*args):
-    """Main command handler."""
-    # Check API key
-    if not get_api_headers():
-        print("OpenRouter API key not configured. Please run 'p90 config' to set your openrouter_api_key.")
-        return
+# ===== HELPER FUNCTIONS =====
 
-    # Get user input
-    user_input = get_user_input(args)
-    if not user_input:
-        print("No input provided")
-        return
+def ensure_config_exists():
+    """Ensure config directory and files exist."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    if not CONFIG_PATH.exists():
+        default_config = load_json(DEFAULTS_DIR / "config.json")
+        save_json(CONFIG_PATH, default_config)
 
-    # Get and parse response
+
+def load_json(path: Path) -> Dict[str, Any]:
+    """Load JSON file."""
+    with open(path) as f:
+        return json.load(f)
+
+
+def save_json(path: Path, data: Dict[str, Any]):
+    """Save JSON file."""
+    with open(path, 'w') as f:
+        json.dump(data, f, indent=4)
+
+
+def get_editor() -> str:
+    """Get the user's preferred editor."""
+    return os.environ.get('EDITOR', 'nano')
+
+
+def get_api_headers() -> Optional[Dict[str, str]]:
+    """Get OpenRouter API headers."""
+    if not CONFIG_PATH.exists():
+        return None
+
     try:
-        response = call_openrouter_api(user_input)
-        parsed = parse_model_response(response)
-    except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-        return
+        config = load_json(CONFIG_PATH)
+        api_key = config.get("openrouter_api_key")
+        if not api_key:
+            return None
 
-    # Handle response types
-    if parsed.response_type == "response":
-        console.print(Markdown(parsed.content))
+        return {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+    except (json.JSONDecodeError, IOError):
+        return None
 
-    elif parsed.response_type == "cli":
-        execute_command(parsed.content)
 
-    elif parsed.response_type == "python-script":
-        SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
-        script_path = SCRIPTS_DIR / parsed.script_name
+def get_system_prompt() -> str:
+    """Get system prompt with hydrated variables."""
+    prompt_path = SYSTEM_PROMPT_PATH if SYSTEM_PROMPT_PATH.exists() else DEFAULTS_DIR / "system_prompt.md"
 
-        with open(script_path, 'w') as f:
-            f.write(parsed.script_body)
+    with open(prompt_path) as f:
+        content = f.read()
 
-        print(f"Saved script to {script_path}")
-        execute_command(f"python {script_path}")
+    # Hydrate variables
+    replacements = {
+        "${{OS}}": os.name,
+        "${{CWD}}": os.getcwd(),
+        "${{DATE}}": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "${{SHELL}}": os.environ.get("SHELL", "unknown")
+    }
+
+    for old, new in replacements.items():
+        content = content.replace(old, new)
+
+    return content
+
+
+def get_model_config() -> Dict[str, Any]:
+    """Get model configuration without API key."""
+    config_path = CONFIG_PATH if CONFIG_PATH.exists() else DEFAULTS_DIR / "config.json"
+    config = load_json(config_path)
+    config.pop("openrouter_api_key", None)
+    return config
+
+
+def get_user_input(args) -> Optional[str]:
+    """Get user input from args or editor."""
+    if args:
+        return " ".join(args)
+
+    with tempfile.NamedTemporaryFile(mode='w+', suffix='.txt', delete=False) as f:
+        temp_path = f.name
+
+    subprocess.run([get_editor(), temp_path])
+
+    with open(temp_path) as f:
+        user_input = f.read().strip()
+
+    os.unlink(temp_path)
+    return user_input if user_input else None
+
+
+def call_openrouter_api(user_input: str) -> str:
+    """Make API call to OpenRouter."""
+    payload = {
+        "messages": [
+            {"role": "system", "content": get_system_prompt()},
+            {"role": "user", "content": user_input},
+        ],
+        **get_model_config()
+    }
+
+    response = httpx.post(
+        OPENROUTER_API_URL,
+        headers=get_api_headers(),
+        json=payload,
+        timeout=40,
+    )
+    response.raise_for_status()
+    return response.json()["choices"][0]["message"]["content"]
+
+
+def parse_model_response(response: str) -> ParsedResponse:
+    """Parse model response based on XML format."""
+    patterns = [
+        (r'<response>(.*?)</response>', lambda m: ParsedResponse("response", m.group(1).strip())),
+        (r'<cli>(.*?)</cli>', lambda m: ParsedResponse("cli", m.group(1).strip())),
+    ]
+
+    for pattern, handler in patterns:
+        match = re.search(pattern, response, re.DOTALL)
+        if match:
+            return handler(match)
+
+    # Handle python-script format
+    script_match = re.search(r'<python-script>(.*?)</python-script>', response, re.DOTALL)
+    if script_match:
+        content = script_match.group(1)
+        name_match = re.search(r'<script-name>(.*?)</script-name>', content, re.DOTALL)
+        body_match = re.search(r'<script-body>(.*?)</script-body>', content, re.DOTALL)
+
+        if name_match and body_match:
+            return ParsedResponse(
+                "python-script",
+                script_name=name_match.group(1).strip(),
+                script_body=body_match.group(1).strip()
+            )
+
+    return ParsedResponse("response", response)
+
+
+def execute_command(command: str):
+    """Execute a shell command and display output."""
+    print(f"Executing: {command}")
+    result = subprocess.run(command, shell=True, capture_output=True, text=True)
+    if result.stdout:
+        print(result.stdout)
+    if result.stderr:
+        console.print(f"[red]{result.stderr}[/red]")
 
 
 if __name__ == "__main__":
