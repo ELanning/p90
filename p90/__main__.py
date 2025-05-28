@@ -5,13 +5,16 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 import re
 from datetime import datetime
 from rich.console import Console
-from rich.table import Table
 from rich.markdown import Markdown
+from rich.panel import Panel
+import sys
+import tty
+import termios
 
 app = App()
 console = Console()
@@ -120,20 +123,11 @@ def scripts():
         console.print("[yellow]No scripts found[/yellow]")
         return
 
-    table = Table(title="Available Scripts")
-    table.add_column("Name", style="cyan")
-    table.add_column("Size", style="magenta")
-    table.add_column("Modified", style="green")
-
-    for script in sorted(scripts):
-        stat = script.stat()
-        table.add_row(
-            script.name,
-            f"{stat.st_size} bytes",
-            datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")
-        )
-
-    console.print(table)
+    # Interactive script selection
+    selected = interactive_script_selection(sorted(scripts))
+    if selected:
+        console.clear()
+        execute_command(f"python {selected}")
 
 
 @app.command
@@ -153,6 +147,67 @@ def delete(script_name: str):
 
 
 # ===== HELPER FUNCTIONS =====
+
+def interactive_script_selection(scripts: List[Path]) -> Optional[Path]:
+    """Interactive script selection with keyboard navigation."""
+    current_index = 0
+
+    # Add "Close" option at the end
+    options = scripts + [None]  # None represents "Close"
+
+    def render_menu():
+        console.clear()
+        console.print(Panel("Available Scripts", style="bold blue"))
+        console.print("Use ↑/↓ to navigate, Enter to execute, Esc to exit\n")
+
+        for i, option in enumerate(options):
+            if option is None:
+                # Close option
+                text = "[ Close ]"
+                style = "bold red" if i == current_index else "dim red"
+            else:
+                # Script option
+                stat = option.stat()
+                size = f"{stat.st_size} bytes"
+                modified = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")
+                text = f"{option.name:<30} {size:<15} {modified}"
+                style = "bold cyan" if i == current_index else "white"
+
+            prefix = "→ " if i == current_index else "  "
+            console.print(prefix + text, style=style)
+
+    # Save terminal settings
+    old_settings = termios.tcgetattr(sys.stdin)
+    try:
+        tty.setraw(sys.stdin.fileno())
+
+        while True:
+            render_menu()
+
+            # Get single keypress
+            key = sys.stdin.read(1)
+
+            # Handle escape sequences for arrow keys
+            if key == '\x1b':  # ESC
+                next_chars = sys.stdin.read(2)
+                if next_chars == '[A':  # Up arrow
+                    current_index = (current_index - 1) % len(options)
+                elif next_chars == '[B':  # Down arrow
+                    current_index = (current_index + 1) % len(options)
+                else:  # Just ESC
+                    console.clear()
+                    return None
+            elif key == '\r' or key == '\n':  # Enter
+                console.clear()
+                selected = options[current_index]
+                return selected if selected is not None else None
+            elif key == '\x03':  # Ctrl+C
+                console.clear()
+                raise KeyboardInterrupt()
+    finally:
+        # Restore terminal settings
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+
 
 def ensure_config_exists():
     """Ensure config directory and files exist."""
