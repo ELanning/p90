@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.scripts]
-mycli = "p90.__main__:main"
+p90 = "p90.__main__:main"
 
 [dependency-groups]
 dev = [
