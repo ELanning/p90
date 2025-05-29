@@ -1,5 +1,3 @@
-from os.path import dirname
-
 import httpx
 from cyclopts import App
 import json
@@ -19,8 +17,6 @@ app = App()
 console = Console()
 
 # Constants
-SRC_ROOT = dirname(__file__)
-DEFAULTS_DIR = SRC_ROOT / Path("p90") / "defaults"
 USER_CONFIG_DIR = Path.home() / ".p90"
 CONFIG_PATH = USER_CONFIG_DIR / "config.json"
 SYSTEM_PROMPT_PATH = USER_CONFIG_DIR / "system_prompt.md"
@@ -100,7 +96,7 @@ def reset():
             pass
 
     # Copy defaults
-    default_config = load_json(DEFAULTS_DIR / "config.json")
+    default_config = json.loads(app_config)
     if api_key:
         default_config["openrouter_api_key"] = api_key
 
@@ -108,10 +104,8 @@ def reset():
     save_json(CONFIG_PATH, default_config)
 
     # Copy system prompt
-    with open(DEFAULTS_DIR / "system_prompt.md") as f:
-        content = f.read()
     with open(SYSTEM_PROMPT_PATH, "w") as f:
-        f.write(content)
+        f.write(app_system_prompt)
 
     print("Config and system prompt reset to defaults (API key preserved)")
 
@@ -168,7 +162,7 @@ def ensure_config_exists():
     # Handle config.json
     if not CONFIG_PATH.exists():
         try:
-            default_config = load_json(DEFAULTS_DIR / "config.json")
+            default_config = json.loads(app_config)
             save_json(CONFIG_PATH, default_config)
         except Exception as e:
             print(f"Failed to create config from defaults: {e}")
@@ -177,10 +171,8 @@ def ensure_config_exists():
     # Handle system_prompt.md
     if not SYSTEM_PROMPT_PATH.exists():
         try:
-            with open(DEFAULTS_DIR / "system_prompt.md") as f:
-                content = f.read()
             with open(SYSTEM_PROMPT_PATH, "w") as f:
-                f.write(content)
+                f.write(app_system_prompt)
         except Exception as e:
             print(f"Failed to create system prompt from defaults: {e}")
             raise SystemExit(1)
@@ -341,6 +333,92 @@ def execute_command(command: str):
 def main():
     app()
 
+app_config = r"""
+{
+    "model": "anthropic/claude-sonnet-4",
+    "temperature": 0.7,
+    "top_p": 1.0,
+    "top_k": 0,
+    "frequency_penalty": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+    "min_p": 0.0,
+    "top_a": 0.0,
+    "openrouter_api_key": ""
+}
+"""
+
+app_system_prompt = r"""
+You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and to assist the user.
+
+# Context
+
+```handlebars
+OS: ${{OS}}
+CWD: ${{CWD}}
+DATE: ${{DATE}}
+SHELL: ${{SHELL}}
+```
+
+# Instructions
+
+A user may query you to execute a task or ask a question.  
+Questions may be:
+
+- General, such as "When was the US founded?".
+- System context specific, such as "How many pngs are in the cwd?"
+
+Tasks may be complicated or simple. If the task can be executed via standard CLI commands, use those. Otherwise, use a python script.
+
+Return the result in one, and only one, of the following formats:
+
+1. response Format
+   ```xml
+   <response>assistant response</response>
+   ```
+2. cli Format
+   ```xml
+   <cli>CLI command</cli>
+   ```
+3. python-script Format
+   ```xml
+   <python-script>
+       <script-name>concise_example_name.py<script-name>
+       <script-body>Generated python script</script-body>
+   </python-script>
+   ```
+
+# response Format
+
+- Wrap the lines appropriately for a CLI context.
+- Keep replies concise, factual, and simple.
+
+# cli Format
+
+- Wrap the CLI line appropriately for a CLI context.
+- You may pipe and chain multiple CLI commands, but keep it as a single CLI command.
+- Only use standard CLI commands that fit the OS and shell context, unless the user has implied a certain command is installed, eg `docker`.
+- Ensure proper quoting of inputs.
+
+# python-script Format
+
+- Write the high level steps of the python command at the top of the file in plain and concise English. Good example:
+  ```python
+  \"""Resizes every JPG image in the CWD to 400x400.
+  1. Iterate every image in the CWD.
+  2. Open and resize the image using PIL.
+  3. Save the result.
+  4. Print a status message to the user.
+  \"""
+  ```
+- The implementation should match the top level action plan as close as reasonable.
+- Break each step into simple and concise functions.
+
+# all Formats
+
+- The reply should be a single top level element of {response, cli, or python-script} and nothing else.
+- Add no extra helper prose or fluff.
+"""
 
 if __name__ == "__main__":
     app()
