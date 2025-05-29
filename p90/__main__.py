@@ -1,3 +1,5 @@
+from os.path import dirname
+
 import httpx
 from cyclopts import App
 import json
@@ -17,11 +19,12 @@ app = App()
 console = Console()
 
 # Constants
-CONFIG_DIR = Path("p90")
-CONFIG_PATH = CONFIG_DIR / "config.json"
-SYSTEM_PROMPT_PATH = CONFIG_DIR / "system_prompt.md"
-DEFAULTS_DIR = CONFIG_DIR / "defaults"
-SCRIPTS_DIR = Path.home() / ".p90" / "scripts"
+SRC_ROOT = dirname(__file__)
+DEFAULTS_DIR = SRC_ROOT / Path("p90") / "defaults"
+USER_CONFIG_DIR = Path.home() / ".p90"
+CONFIG_PATH = USER_CONFIG_DIR / "config.json"
+SYSTEM_PROMPT_PATH = USER_CONFIG_DIR / "system_prompt.md"
+SCRIPTS_DIR = USER_CONFIG_DIR / "scripts"
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 
@@ -35,12 +38,15 @@ class ParsedResponse:
 
 # ===== COMMANDS =====
 
+
 @app.default
 def default_action(*args):
     """Main command handler."""
     # Check API key
     if not get_api_headers():
-        print("OpenRouter API key not configured. Please run 'p90 config' to set your openrouter_api_key.")
+        print(
+            "OpenRouter API key not configured. Please run 'p90 config' to set your openrouter_api_key."
+        )
         return
 
     # Get user input
@@ -68,7 +74,7 @@ def default_action(*args):
         SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
         script_path = SCRIPTS_DIR / parsed.script_name
 
-        with open(script_path, 'w') as f:
+        with open(script_path, "w") as f:
             f.write(parsed.script_body)
 
         print(f"Saved script to {script_path}")
@@ -104,7 +110,7 @@ def reset():
     # Copy system prompt
     with open(DEFAULTS_DIR / "system_prompt.md") as f:
         content = f.read()
-    with open(SYSTEM_PROMPT_PATH, 'w') as f:
+    with open(SYSTEM_PROMPT_PATH, "w") as f:
         f.write(content)
 
     print("Config and system prompt reset to defaults (API key preserved)")
@@ -130,7 +136,7 @@ def scripts():
         table.add_row(
             script.name,
             f"{stat.st_size} bytes",
-            datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")
+            datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M"),
         )
 
     console.print(table)
@@ -139,8 +145,8 @@ def scripts():
 @app.command
 def delete(script_name: str):
     """Deletes the script with the given name from the `~/.p90/scripts/` directory."""
-    if not script_name.endswith('.py'):
-        script_name += '.py'
+    if not script_name.endswith(".py"):
+        script_name += ".py"
 
     script_path = SCRIPTS_DIR / script_name
 
@@ -154,12 +160,30 @@ def delete(script_name: str):
 
 # ===== HELPER FUNCTIONS =====
 
+
 def ensure_config_exists():
-    """Ensure config directory and files exist."""
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    """Ensure config directory and files exist, recreating from defaults if needed."""
+    USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Handle config.json
     if not CONFIG_PATH.exists():
-        default_config = load_json(DEFAULTS_DIR / "config.json")
-        save_json(CONFIG_PATH, default_config)
+        try:
+            default_config = load_json(DEFAULTS_DIR / "config.json")
+            save_json(CONFIG_PATH, default_config)
+        except Exception as e:
+            print(f"Failed to create config from defaults: {e}")
+            raise SystemExit(1)
+
+    # Handle system_prompt.md
+    if not SYSTEM_PROMPT_PATH.exists():
+        try:
+            with open(DEFAULTS_DIR / "system_prompt.md") as f:
+                content = f.read()
+            with open(SYSTEM_PROMPT_PATH, "w") as f:
+                f.write(content)
+        except Exception as e:
+            print(f"Failed to create system prompt from defaults: {e}")
+            raise SystemExit(1)
 
 
 def load_json(path: Path) -> Dict[str, Any]:
@@ -170,21 +194,19 @@ def load_json(path: Path) -> Dict[str, Any]:
 
 def save_json(path: Path, data: Dict[str, Any]):
     """Save JSON file."""
-    with open(path, 'w') as f:
+    with open(path, "w") as f:
         json.dump(data, f, indent=4)
 
 
 def get_editor() -> str:
     """Get the user's preferred editor."""
-    return os.environ.get('EDITOR', 'nano')
+    return os.environ.get("EDITOR", "nano")
 
 
 def get_api_headers() -> Optional[Dict[str, str]]:
     """Get OpenRouter API headers."""
-    if not CONFIG_PATH.exists():
-        return None
-
     try:
+        ensure_config_exists()
         config = load_json(CONFIG_PATH)
         api_key = config.get("openrouter_api_key")
         if not api_key:
@@ -192,25 +214,29 @@ def get_api_headers() -> Optional[Dict[str, str]]:
 
         return {
             "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         }
-    except (json.JSONDecodeError, IOError):
-        return None
+    except (json.JSONDecodeError, IOError) as e:
+        print(f"Failed to read config: {e}")
+        raise SystemExit(1)
 
 
 def get_system_prompt() -> str:
     """Get system prompt with hydrated variables."""
-    prompt_path = SYSTEM_PROMPT_PATH if SYSTEM_PROMPT_PATH.exists() else DEFAULTS_DIR / "system_prompt.md"
-
-    with open(prompt_path) as f:
-        content = f.read()
+    try:
+        ensure_config_exists()
+        with open(SYSTEM_PROMPT_PATH) as f:
+            content = f.read()
+    except (IOError, OSError) as e:
+        print(f"Failed to read system prompt: {e}")
+        raise SystemExit(1)
 
     # Hydrate variables
     replacements = {
         "${{OS}}": os.name,
         "${{CWD}}": os.getcwd(),
         "${{DATE}}": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "${{SHELL}}": os.environ.get("SHELL", "unknown")
+        "${{SHELL}}": os.environ.get("SHELL", "unknown"),
     }
 
     for old, new in replacements.items():
@@ -221,10 +247,14 @@ def get_system_prompt() -> str:
 
 def get_model_config() -> Dict[str, Any]:
     """Get model configuration without API key."""
-    config_path = CONFIG_PATH if CONFIG_PATH.exists() else DEFAULTS_DIR / "config.json"
-    config = load_json(config_path)
-    config.pop("openrouter_api_key", None)
-    return config
+    try:
+        ensure_config_exists()
+        config = load_json(CONFIG_PATH)
+        config.pop("openrouter_api_key", None)
+        return config
+    except Exception as e:
+        print(f"Failed to read model config: {e}")
+        raise SystemExit(1)
 
 
 def get_user_input(args) -> Optional[str]:
@@ -232,7 +262,7 @@ def get_user_input(args) -> Optional[str]:
     if args:
         return " ".join(args)
 
-    with tempfile.NamedTemporaryFile(mode='w+', suffix='.txt', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w+", suffix=".txt", delete=False) as f:
         temp_path = f.name
 
     subprocess.run([get_editor(), temp_path])
@@ -251,7 +281,7 @@ def call_openrouter_api(user_input: str) -> str:
             {"role": "system", "content": get_system_prompt()},
             {"role": "user", "content": user_input},
         ],
-        **get_model_config()
+        **get_model_config(),
     }
 
     response = httpx.post(
@@ -267,8 +297,11 @@ def call_openrouter_api(user_input: str) -> str:
 def parse_model_response(response: str) -> ParsedResponse:
     """Parse model response based on XML format."""
     patterns = [
-        (r'<response>(.*?)</response>', lambda m: ParsedResponse("response", m.group(1).strip())),
-        (r'<cli>(.*?)</cli>', lambda m: ParsedResponse("cli", m.group(1).strip())),
+        (
+            r"<response>(.*?)</response>",
+            lambda m: ParsedResponse("response", m.group(1).strip()),
+        ),
+        (r"<cli>(.*?)</cli>", lambda m: ParsedResponse("cli", m.group(1).strip())),
     ]
 
     for pattern, handler in patterns:
@@ -277,17 +310,19 @@ def parse_model_response(response: str) -> ParsedResponse:
             return handler(match)
 
     # Handle python-script format
-    script_match = re.search(r'<python-script>(.*?)</python-script>', response, re.DOTALL)
+    script_match = re.search(
+        r"<python-script>(.*?)</python-script>", response, re.DOTALL
+    )
     if script_match:
         content = script_match.group(1)
-        name_match = re.search(r'<script-name>(.*?)</script-name>', content, re.DOTALL)
-        body_match = re.search(r'<script-body>(.*?)</script-body>', content, re.DOTALL)
+        name_match = re.search(r"<script-name>(.*?)</script-name>", content, re.DOTALL)
+        body_match = re.search(r"<script-body>(.*?)</script-body>", content, re.DOTALL)
 
         if name_match and body_match:
             return ParsedResponse(
                 "python-script",
                 script_name=name_match.group(1).strip(),
-                script_body=body_match.group(1).strip()
+                script_body=body_match.group(1).strip(),
             )
 
     return ParsedResponse("response", response)
